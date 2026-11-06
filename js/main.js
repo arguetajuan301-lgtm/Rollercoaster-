@@ -110,16 +110,64 @@ function buildTrack(ds, useLog) {
     const x = (t - t0) / span * L; const k = Math.round(sAtX(x) / DS);
     return { s: k * DS, x, y: py[k], label, date: t };
   }).filter(Boolean);
-  const stories = (ds.story || []).map(([d, title, body]) => {
+  const game = CC.GAME[ds.id] || {};
+  const stories = (ds.story || []).map(([d, title, body], i) => {
     const t = parseDate(d); if (t == null || t < t0 - 1 || t > t1 + 1) return null;
     const x = Math.max(0, Math.min(L, (t - t0) / span * L)); const k = Math.round(sAtX(x) / DS);
-    return { s: k * DS, x, y: py[k], title, body, date: t };
+    return { s: k * DS, x, y: py[k], title, body, date: t, kind: (game.kinds || [])[i] || null };
   }).filter(Boolean).sort((a, b) => a.s - b.s);
+  const atDate = d => { const t = parseDate(d); if (t == null) return null; const x = Math.max(0, Math.min(L, (t - t0) / span * L)); return { t, x, s: sAtX(x) }; };
+
+  // broad chapters of the era, for the timeline
+  const phases = (ds.dated === false ? [] : game.phases || []).map(([a, b, label]) => {
+    const A = atDate(a), B = atDate(b); return A && B && B.x > A.x ? { x0: A.x, x1: B.x, label } : null;
+  }).filter(Boolean);
+
+  // crests near the top of the track, for the height joke
+  const crests = [], win = Math.round(60 / DS), topY = BASE + H * 0.78;
+  for (let i = win; i < N - win; i += 2) {
+    if (py[i] < topY || px[i] < 0 || px[i] > L) continue;
+    let isMax = true;
+    for (let k = i - win; k <= i + win; k += 2) if (py[k] > py[i] + 1e-3) { isMax = false; break; }
+    if (isMax && (!crests.length || i * DS - crests[crests.length - 1] > 150)) crests.push(i * DS);
+  }
+
+  // drops worth a warning: from the crest to the bottom of each steep descent
+  const drops = [];
+  for (let i = 0; i < N - 1; i++) {
+    if (Math.sin(ang[i]) > -0.3 || px[i] < -5 || px[i] > L) continue;
+    let k0 = i; while (k0 > 0 && Math.sin(ang[k0 - 1]) < -0.02) k0--;
+    let k1 = i, steep = 0; while (k1 < N - 1 && Math.sin(ang[k1 + 1]) < -0.02) { k1++; steep = Math.max(steep, -ang[k1]); }
+    const depth = py[k0] - py[k1];
+    if (depth > 14) drops.push({ s: k0 * DS, end: k1 * DS, depth, angle: Math.round(steep * 180 / Math.PI) });
+    i = k1;
+  }
+
+  // decision stops: written ones for the famous rides, automatic ones at big swings otherwise
+  let stops;
+  if (game.stops) {
+    stops = game.stops.map(stp => { const A = atDate(stp.d); return A && A.t >= t0 && A.t <= t1 ? Object.assign({}, stp, { s: A.s, date: A.t }) : null; }).filter(Boolean);
+  } else {
+    stops = []; let lo = vals[0], hi = vals[0], last = -9, nh = 0, np = 0;
+    const G = CC.GENERIC_STOPS, OPTS = [["Go all in", 1], ["Keep half in, half in cash", 0.5], ["Sell everything", 0]];
+    raw.forEach(([t, v], i) => {
+      lo = Math.min(lo, v); hi = Math.max(hi, v);
+      if (i - last < 2 || stops.length >= 5 || i === raw.length - 1) return;
+      let pick = null;
+      if (v >= lo * 1.3 && v >= hi) pick = G.hype[nh++ % G.hype.length];
+      else if (v <= hi * 0.75) pick = G.panic[np++ % G.panic.length];
+      if (!pick) return;
+      const x = (t - t0) / span * L;
+      stops.push(Object.assign({}, pick, { opts: OPTS, s: sAtX(x), date: t }));
+      lo = hi = v; last = i;
+    });
+  }
+  stops.sort((a, b) => a.s - b.s);
   // a gate's toast is skipped when a story card covers the same moment
   events.forEach(e => { e.quiet = stories.some(st => Math.abs(st.date - e.date) < 4); });
 
   return {
-    stories, sAtX,
+    stories, sAtX, phases, crests, drops, stops, mode: game.game === "quiz" ? "quiz" : "money", v0: vals[0], vEnd: vals[vals.length - 1],
     ds, L, N, px, py, ang, kap, total: (N - 1) * DS, t0, t1, span, vMin, vMax, canLog,
     toY, fromY, events, sDataEnd: sAtX(L), sDataStart: sAtX(0),
     timeAt: x => t0 + Math.min(1, Math.max(0, x / L)) * span,
@@ -351,6 +399,19 @@ const BASE_PITCH = -0.12;
 const lookState = { yaw: 0, pitch: BASE_PITCH, drag: false, lx: 0, ly: 0, idle: 0 };
 
 function resetStats() { return { maxV: 0, maxG: 1, minG: 1, air: 0, drop: 0, dropTop: null, time: 0 }; }
+const START_CASH = 10000;
+function resetGame(tr) {
+  st.port = { cash: 0, shares: START_CASH / tr.v0, alloc: 1 };
+  st.quiz = { right: 0, total: 0 };
+  st.nextStop = 0; st.nextCrest = 0; st.nextDrop = 0; st.warnDrop = null; st.lastJoke = -1e9; st.jokeN = 0;
+  closeDecision(true);
+}
+const priceAt = s => track.fromY(sample(track, s).y);
+const walletValue = () => st.port.cash + st.port.shares * priceAt(st.s);
+function rebalance(alloc) {
+  const total = walletValue(), price = priceAt(st.s);
+  st.port.shares = alloc * total / price; st.port.cash = (1 - alloc) * total; st.port.alloc = alloc;
+}
 
 function applyTheme(tr) {
   const th = themeOf(tr.ds); theme = th;
@@ -373,10 +434,13 @@ function loadRide(ds, keepProgress) {
   current = ds; track = buildTrack(ds, useLog); buildScene(track);
   if (!sameRide || !world) applyTheme(track);
   st.s = keepProgress ? frac * track.total : LEAD * 0.15;
-  if (!keepProgress) { st.v = 0; st.stats = resetStats(); st.nextEvent = 0; st.nextStory = 0; }
+  if (!keepProgress) { st.v = 0; st.stats = resetStats(); st.nextEvent = 0; st.nextStory = 0; resetGame(track); }
   else {
     const k = track.events.findIndex(e => e.s > st.s); st.nextEvent = k < 0 ? track.events.length : k;
     const j = track.stories.findIndex(e => e.s > st.s + 25); st.nextStory = j < 0 ? track.stories.length : j;
+    const after = (list, f) => { const i = list.findIndex(f); return i < 0 ? list.length : i; };
+    st.nextStop = after(track.stops, e => e.s > st.s); st.nextCrest = after(track.crests, c => c > st.s); st.nextDrop = after(track.drops, d => d.s > st.s);
+    if (!st.port) resetGame(track);
   }
   document.getElementById("hudName").textContent = ds.name;
   document.getElementById("hudSub").textContent = ds.period + " · " + themeOf(ds).place;
@@ -417,6 +481,14 @@ function step(dt) {
     const e = tr.events[st.nextEvent++]; if (!e.quiet) showToast(e.label, fmtDate(e.date) + " · " + fmtVal(tr.fromY(e.y), tr.ds.unit));
   }
   while (st.nextStory < tr.stories.length && tr.stories[st.nextStory].s - 22 <= st.s) showStory(tr.stories[st.nextStory++]);
+  // a stranger (or a quiz) stops you: the ride drops into slow motion while you choose
+  if (!st.decision && st.nextStop < tr.stops.length && tr.stops[st.nextStop].s <= st.s) openDecision(tr.stops[st.nextStop++]);
+  // the top of a big climb
+  while (st.nextCrest < tr.crests.length && tr.crests[st.nextCrest] - 14 <= st.s) { st.nextCrest++; heightJoke(); }
+  // warn before every big drop
+  while (st.nextDrop < tr.drops.length && tr.drops[st.nextDrop].end < st.s) st.nextDrop++;
+  const d = tr.drops[st.nextDrop];
+  if (d && !d.warned && d.s - st.s <= Math.max(30, st.v * 3.2)) { d.warned = true; warnDrop(d); }
 }
 
 const upV = new THREE.Vector3(), fwdV = new THREE.Vector3(), rightV = new THREE.Vector3(0, 0, 1), basis = new THREE.Matrix4();
@@ -450,7 +522,14 @@ function updateHud() {
   const v = tr.fromY(p.y), v0 = tr.ds.pts[0][1];
   const x = Math.min(tr.L, Math.max(0, p.x));
   const t = tr.timeAt(x);
-  $("hudDate").textContent = tr.dated ? fmtDate(t, tr.span > 2500) : `Point ${Math.round(t) + 1} of ${tr.ds.pts.length}`;
+  const ph = tr.phases.find(f => x >= f.x0 && x <= f.x1);
+  $("hudDate").textContent = (tr.dated ? fmtDate(t, tr.span > 2500) : `Point ${Math.round(t) + 1} of ${tr.ds.pts.length}`) + (ph ? " · " + ph.label : "");
+  updateWallet(v);
+  if (st.warnDrop) {
+    const d = st.warnDrop, left = (d.s - st.s) / Math.max(1, st.v) / st.mult;
+    if (st.s > d.s + 4) { $("warn").classList.remove("show"); st.warnDrop = null; }
+    else $("warnT").textContent = left > 0.4 ? `in ${Math.ceil(left)}…` : "Here we go!";
+  }
   $("hudValue").textContent = fmtVal(v, tr.ds.unit);
   const chg = v / v0 - 1;
   const ce = $("hudChg"); ce.textContent = pct(chg) + " since start"; ce.className = chg >= 0 ? "up" : "down";
@@ -463,6 +542,16 @@ function updateHud() {
   gEl.className = "num" + (st.gSm < 0.3 ? " air" : st.gSm > 3 ? " heavy" : "");
   $("hNum").innerHTML = Math.round(p.y) + "<small>m</small>";
   $("chain").hidden = !st.onChain;
+}
+function money(v) { return "$" + Math.round(v).toLocaleString("en-US"); }
+function updateWallet(price) {
+  const el = $("wallet"), tr = track;
+  if (tr.mode === "quiz") { el.innerHTML = ""; el.append(`Quiz ${st.quiz.right}/${st.quiz.total} right · ${(st.quiz.right * 1000).toLocaleString("en-US")} pts`); return; }
+  const val = st.port.cash + st.port.shares * price, hold = START_CASH * price / tr.v0;
+  el.innerHTML = `<span class="w-main"></span><span class="w-sub"></span>`;
+  el.querySelector(".w-main").textContent = `Your ${money(START_CASH)} → ${money(val)}`;
+  el.querySelector(".w-sub").textContent = `${Math.round(st.port.alloc * 100)}% invested · buy & hold ${money(hold)}`;
+  el.classList.toggle("ahead", val >= hold * 1.005); el.classList.toggle("behind", val < hold * 0.995);
 }
 function runningHigh(tr, x) {
   const ds = tr.ds, t = tr.timeAt(x); let hi = -Infinity;
@@ -478,12 +567,22 @@ function drawMini(rebuild) {
   const dpr = Math.min(window.devicePixelRatio || 1, 2), w = mini.clientWidth, h = mini.clientHeight;
   if (!w || !h) return;
   if (mini.width !== Math.round(w * dpr) || rebuild) { mini.width = Math.round(w * dpr); mini.height = Math.round(h * dpr); miniCache = null; }
-  const tr = track, pad = 6;
+  const tr = track, pad = 6, band = tr.phases.length ? 17 : 0;
   const X = x => pad + (x + LEAD) / (tr.L + LEAD + RUNOUT) * (w - pad * 2);
-  const Y = y => h - pad - (y - BASE) / H * (h - pad * 2);
+  const Y = y => h - pad - 4 - (y - BASE) / H * (h - pad * 2 - band - 4);
   mctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   mctx.clearRect(0, 0, w, h);
   const p = sample(tr, st.s);
+  // chapters of the era
+  mctx.font = '600 10px "IBM Plex Mono", monospace'; mctx.textBaseline = "middle";
+  tr.phases.forEach((f, i) => {
+    const a = X(f.x0), b = X(f.x1), here = p.x >= f.x0 && p.x <= f.x1;
+    mctx.fillStyle = here ? "rgba(255,181,71,.28)" : i % 2 ? "rgba(143,155,189,.16)" : "rgba(143,155,189,.08)";
+    mctx.fillRect(a, 2, b - a - 1, band - 4);
+    let label = f.label.toUpperCase();
+    while (label.length > 3 && mctx.measureText(label).width > b - a - 8) label = label.slice(0, -2) + "…";
+    if (b - a > 26) { mctx.fillStyle = here ? "#ffb547" : "rgba(232,236,248,.7)"; mctx.fillText(label, a + 4, band / 2); }
+  });
   const path = new Path2D(); const stp = Math.max(1, Math.floor(tr.N / (w * 1.5)));
   for (let i = 0; i < tr.N; i += stp) { i ? path.lineTo(X(tr.px[i]), Y(tr.py[i])) : path.moveTo(X(tr.px[i]), Y(tr.py[i])); }
   mctx.lineWidth = 1.5; mctx.strokeStyle = "rgba(143,155,189,.45)"; mctx.stroke(path);
@@ -491,7 +590,18 @@ function drawMini(rebuild) {
   const fill = new Path2D(path); fill.lineTo(X(tr.px[tr.N - 1]), h); fill.lineTo(X(tr.px[0]), h); fill.closePath();
   mctx.fillStyle = "rgba(255,181,71,.12)"; mctx.fill(fill);
   mctx.lineWidth = 2; mctx.strokeStyle = "#ffb547"; mctx.stroke(path); mctx.restore();
-  tr.events.forEach(e => { mctx.fillStyle = "rgba(255,181,71,.6)"; mctx.fillRect(X(e.x) - 0.5, pad, 1, h - pad * 2); });
+  tr.events.forEach(e => { mctx.fillStyle = "rgba(255,181,71,.35)"; mctx.fillRect(X(e.x) - 0.5, band + 2, 1, h - band - 4); });
+  // milestones, colored by type
+  tr.stories.forEach(sy => {
+    const k = CC.KINDS[sy.kind]; mctx.fillStyle = k ? k.color : "#ffb547";
+    mctx.beginPath(); mctx.arc(X(sy.x), h - 5, 3, 0, 7); mctx.fill();
+  });
+  // decision stops
+  tr.stops.forEach(sp => {
+    const x = X(sample(tr, sp.s).x), y = band + 7, past = sp.s < st.s;
+    mctx.fillStyle = past ? "rgba(232,236,248,.35)" : "#e8ecf8";
+    mctx.beginPath(); mctx.moveTo(x, y - 4); mctx.lineTo(x + 4, y); mctx.lineTo(x, y + 4); mctx.lineTo(x - 4, y); mctx.closePath(); mctx.fill();
+  });
   mctx.beginPath(); mctx.arc(X(p.x), Y(p.y), 4.5, 0, Math.PI * 2); mctx.fillStyle = "#fff"; mctx.fill();
   mctx.lineWidth = 2; mctx.strokeStyle = "#ffb547"; mctx.stroke();
 }
@@ -501,10 +611,96 @@ function showStory(sy) {
   const el = $("story"), b = CC.BOARDS[themeOf(track.ds).board] || CC.BOARDS.neon;
   el.style.setProperty("--sbg", b.bg); el.style.setProperty("--sfg", b.fg); el.style.setProperty("--sacc", b.accent); el.style.setProperty("--sfont", b.css);
   $("storyK").textContent = fmtDate(sy.date) + " · " + fmtVal(track.fromY(sy.y), track.ds.unit);
+  const kind = CC.KINDS[sy.kind], kp = $("storyKind");
+  kp.hidden = !kind; if (kind) { kp.textContent = kind.label; kp.style.background = kind.color; }
   $("storyT").textContent = sy.title; $("storyB").textContent = sy.body;
   el.classList.add("show"); clearTimeout(storyTimer);
   storyTimer = setTimeout(() => el.classList.remove("show"), Math.max(6000, 2500 + sy.body.length * 45) / Math.sqrt(st.mult));
 }
+/* ---- decision stops ---- */
+function openDecision(stp) {
+  const quiz = !!stp.q, el = $("decision"), opts = $("decOpts");
+  let choices;
+  if (quiz) {
+    choices = stp.opts.map((label, i) => ({ label, right: i === 0 }));
+    for (let i = choices.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [choices[i], choices[j]] = [choices[j], choices[i]]; }
+  } else choices = stp.opts.map(([label, alloc]) => ({ label, alloc }));
+  st.decision = { stp, quiz, choices, left: quiz ? 15 : 12, limit: quiz ? 15 : 12, answered: false, closeIn: 0 };
+  el.classList.toggle("quiz", quiz);
+  $("decWho").textContent = quiz ? "Pop quiz · " + fmtDate(stp.date) : stp.who + " · " + fmtDate(stp.date);
+  $("decSay").textContent = quiz ? stp.q : "“" + stp.say + "”";
+  $("decNote").textContent = quiz ? (track.mode === "quiz" ? "Right answers score 1,000 points." : "A right answer pays a 5% bonus.") : `You're ${Math.round(st.port.alloc * 100)}% invested right now.`;
+  $("decResult").textContent = "";
+  opts.innerHTML = "";
+  choices.forEach((c, i) => {
+    const b = document.createElement("button"); b.type = "button"; b.className = "dec-opt";
+    const k = document.createElement("kbd"); k.textContent = String(i + 1); b.append(k, document.createTextNode(c.label));
+    b.addEventListener("click", () => choose(i)); opts.append(b);
+  });
+  el.hidden = false; requestAnimationFrame(() => el.classList.add("show"));
+  const first = opts.querySelector("button"); if (first) first.focus({ preventScroll: true });
+}
+function choose(i) {
+  const d = st.decision; if (!d || d.answered) return;
+  d.answered = true;
+  const btns = [...$("decOpts").children];
+  btns.forEach(b => b.disabled = true);
+  if (d.quiz) {
+    const c = d.choices[i], rightIdx = d.choices.findIndex(x => x.right);
+    st.quiz.total++;
+    if (c && c.right) {
+      st.quiz.right++;
+      if (track.mode === "money") { const bonus = walletValue() * 0.05; st.port.cash += bonus; rebalance(st.port.alloc); $("decResult").textContent = `Correct! +${money(bonus)}. ${d.stp.fact}`; }
+      else $("decResult").textContent = `Correct! +1,000 pts. ${d.stp.fact}`;
+    } else $("decResult").textContent = (c ? "Not quite. " : "Time's up. ") + `It's “${d.choices[rightIdx].label}”. ${d.stp.fact}`;
+    btns.forEach((b, k) => b.classList.toggle(d.choices[k].right ? "right" : k === i ? "wrong" : "", true));
+    d.closeIn = 4.2;
+  } else {
+    const c = d.choices[i];
+    if (c) { rebalance(c.alloc); $("decResult").textContent = c.alloc === 1 ? "You're all in. Hold on tight." : c.alloc === 0 ? "You're all cash. Safe, unless it rallies." : "Half in, half in cash."; if (btns[i]) btns[i].classList.add("picked"); }
+    else $("decResult").textContent = `You shrugged and stayed ${Math.round(st.port.alloc * 100)}% invested.`;
+    d.closeIn = 1.6;
+  }
+}
+function closeDecision(instant) {
+  const el = $("decision"); st.decision = null;
+  el.classList.remove("show"); if (instant) el.hidden = true; else setTimeout(() => { if (!st.decision) el.hidden = true; }, 350);
+}
+function tickDecision(dt) {
+  const d = st.decision; if (!d) return;
+  if (!d.answered) {
+    d.left -= dt; $("decTimer").style.transform = `scaleX(${Math.max(0, d.left / d.limit)})`;
+    if (d.left <= 0) choose(-1);
+  } else { d.closeIn -= dt; if (d.closeIn <= 0) closeDecision(); }
+}
+
+/* ---- the top of a big climb, and warnings before a drop ---- */
+let jokeTimer = 0;
+function heightJoke() {
+  if (st.stats.time - st.lastJoke < 20) return;
+  st.lastJoke = st.stats.time;
+  const [a, b] = CC.HEIGHT_JOKES[st.jokeN++ % CC.HEIGHT_JOKES.length];
+  $("jokeA").textContent = a; $("jokeB").textContent = b;
+  const el = $("joke"); el.classList.add("show"); clearTimeout(jokeTimer); jokeTimer = setTimeout(() => el.classList.remove("show"), 4200);
+}
+function warnDrop(d) {
+  st.warnDrop = d;
+  $("warnH").textContent = d.depth > 70 ? `Big drop ahead: ${Math.round(d.depth)} m` : `Drop ahead: ${Math.round(d.depth)} m`;
+  $("warnA").textContent = d.angle > 5 ? ` · ${d.angle}°` : "";
+  $("warn").classList.add("show");
+  beep();
+}
+function beep() {
+  if (!audio.ctx || !audio.on) return;
+  const t = audio.ctx.currentTime;
+  [0, 0.16, 0.32].forEach((o, i) => {
+    const osc = audio.ctx.createOscillator(), g = audio.ctx.createGain();
+    osc.type = "triangle"; osc.frequency.value = 660 + i * 220;
+    g.gain.setValueAtTime(0.0001, t + o); g.gain.exponentialRampToValueAtTime(0.12, t + o + 0.01); g.gain.exponentialRampToValueAtTime(0.0001, t + o + 0.12);
+    osc.connect(g).connect(audio.ctx.destination); osc.start(t + o); osc.stop(t + o + 0.14);
+  });
+}
+
 let toastTimer = 0;
 function showToast(title, sub) {
   const t = $("toast"); t.innerHTML = ""; t.append(title);
@@ -530,7 +726,7 @@ function initAudio() {
 function updateAudio(dt) {
   if (!audio.ctx) return;
   const t = audio.ctx.currentTime, active = audio.on && st.mode === "riding" && !st.paused;
-  Music.update(st.mode !== "riding" ? 0.12 : st.paused ? 0.05 : 0.35 + 0.65 * Math.min(1, st.v / 40), st.mode === "riding" && st.dd < -0.2);
+  Music.update(st.mode !== "riding" ? 0.12 : st.paused ? 0.05 : st.decision ? 0.15 : 0.35 + 0.65 * Math.min(1, st.v / 40), st.mode === "riding" && st.dd < -0.2);
   const sp = Math.min(1, st.v / 45);
   audio.gain.gain.setTargetAtTime(active ? 0.04 + sp * sp * 0.9 : 0, t, 0.15);
   audio.filt.frequency.setTargetAtTime(250 + sp * 2600, t, 0.2);
@@ -574,6 +770,7 @@ function selectRide(ds) {
   document.querySelectorAll(".ride").forEach(el => el.setAttribute("aria-pressed", el.dataset.id === ds.id ? "true" : "false"));
   loadRide(ds, false); st.mode = "idle";
   $("boardHint").textContent = `${ds.name} · ${ds.period}`;
+  renderLeaderboards();
 }
 function startAudio() {
   initAudio(); if (!audio.ctx) return;
@@ -587,12 +784,44 @@ function board() {
   loadRide(current, false); st.mode = "riding"; st.paused = false; $("pauseBtn").setAttribute("aria-pressed", "false"); $("pauseBtn").textContent = "Pause";
   lookState.yaw = 0; lookState.pitch = BASE_PITCH;
 }
+function oracleValue(tr) {
+  // best possible with these stops: all in when it rises before the next stop, all cash when it falls, every quiz right
+  let in1 = START_CASH, out0 = -Infinity, lastP = tr.v0;
+  tr.stops.forEach(sp => {
+    const pr = priceAt(sp.s); in1 *= pr / lastP; lastP = pr;
+    if (sp.q) { in1 *= 1.05; out0 *= 1.05; } else { const m = Math.max(in1, out0); in1 = out0 = m; }
+  });
+  in1 *= tr.vEnd / lastP;
+  return Math.max(in1, out0);
+}
+function showScore(tr) {
+  const box = $("doneScore");
+  $("scoreLead").textContent = tr.mode === "quiz" ? "Your score" : "You cashed out";
+  if (tr.mode === "quiz") {
+    const pts = st.quiz.right * 1000, n = tr.stops.length;
+    const title = st.quiz.right === n ? "Climate scientist" : st.quiz.right >= n * 0.6 ? "Science fair winner" : "Needs more coffee";
+    $("scoreBig").textContent = pts.toLocaleString("en-US") + " pts";
+    $("scoreSub").textContent = `${st.quiz.right} of ${n} questions right`;
+    $("scoreTitle").textContent = title;
+    submitScore(tr.ds.id, pts, "pts");
+  } else {
+    const val = st.port.cash + st.port.shares * tr.vEnd, hold = START_CASH * tr.vEnd / tr.v0, best = oracleValue(tr);
+    const title = val >= best * 0.9 ? "Time traveler" : val >= hold * 1.15 ? "Market wizard" : val >= hold ? "Steady hands" : val >= hold * 0.6 ? "Paper hands" : "Bag holder";
+    $("scoreBig").textContent = money(val);
+    $("scoreSub").textContent = `from ${money(START_CASH)} · buy & hold ${money(hold)} · perfect timing ${money(best)}`;
+    $("scoreTitle").textContent = title;
+    submitScore(tr.ds.id, val, "$");
+  }
+  box.hidden = false;
+}
 function finish() {
   if (st.mode !== "riding") return;
   st.mode = "done";
   const S = st.stats, tr = track;
   const vals = tr.ds.pts.map(p => p[1]);
+  closeDecision(true); $("warn").classList.remove("show");
   $("doneTitle").textContent = tr.ds.name + " survived";
+  showScore(tr);
   const items = [
     [Math.round(S.maxV * 3.6) + " km/h", "Top speed"],
     [S.maxG.toFixed(1) + " G", "Max force"],
@@ -605,6 +834,64 @@ function finish() {
   items.forEach(([b, s]) => { const d = document.createElement("div"); d.innerHTML = `<b></b><span></span>`; d.querySelector("b").textContent = b; d.querySelector("span").textContent = s; $("doneStats").append(d); });
   setTimeout(() => { $("doneScreen").hidden = false; }, 900);
 }
+
+/* ---- leaderboard: shared on claude.ai, your own best everywhere else ---- */
+const LB = { db: null, user: null, uid: null, docs: [], mine: null, ready: false };
+const localBest = id => { try { return JSON.parse(localStorage.getItem("cc-best-" + id) || "null"); } catch (e) { return null; } };
+async function initLeaderboard() {
+  try {
+    if (!window.claude || typeof window.claude.use !== "function") return;
+    const [db, user] = await Promise.all([window.claude.use("db"), window.claude.use("user")]);
+    if (!db || !user) return;
+    LB.db = db; LB.user = user; LB.uid = await user.id();
+    if (!LB.uid) return;
+    db.collection("scores").onSnapshot(snap => {
+      LB.ready = true;
+      LB.docs = snap.docs.map(d => ({ id: d.id, rides: (d.data() || {}).rides || {} }));
+      LB.mine = LB.docs.find(d => d.id === LB.uid) || null;
+      renderLeaderboards();
+    }, () => { LB.db = null; renderLeaderboards(); });
+  } catch (e) { /* the page works without a shared board */ }
+}
+let writing = false;
+async function submitScore(rideId, score, unit) {
+  const prev = localBest(rideId);
+  if (!prev || score > prev.best) { try { localStorage.setItem("cc-best-" + rideId, JSON.stringify({ best: Math.round(score), unit })); } catch (e) {} }
+  renderLeaderboards();
+  if (!LB.db || !LB.uid || rideId.startsWith("custom-") || writing) return;
+  const mine = (LB.mine && LB.mine.rides) || {};
+  if (mine[rideId] && mine[rideId].best >= score) return;
+  writing = true;
+  try { await LB.db.doc("scores/" + LB.uid).set({ rides: Object.assign({}, mine, { [rideId]: { best: Math.round(score), unit, at: Date.now() } }) }); }
+  catch (e) { LB.readOnly = true; }
+  writing = false;
+}
+const fmtScore = r => r.unit === "pts" ? r.best.toLocaleString("en-US") + " pts" : money(r.best);
+async function renderLeaderboard(el, rideId) {
+  if (!el) return;
+  const rows = LB.docs.filter(d => d.rides[rideId]).map(d => Object.assign({ id: d.id }, d.rides[rideId])).sort((a, b) => b.best - a.best).slice(0, 8);
+  const mineLocal = localBest(rideId);
+  el.innerHTML = "";
+  const h = document.createElement("h3"); h.textContent = "Top riders"; el.append(h);
+  if (!LB.db || rideId.startsWith("custom-")) {
+    const p = document.createElement("p"); p.className = "fine";
+    p.textContent = mineLocal ? `Your best: ${fmtScore(mineLocal)}.` : "No score yet. Finish the ride to set one.";
+    if (!rideId.startsWith("custom-")) p.textContent += " A shared leaderboard appears when this page is opened on claude.ai.";
+    el.append(p); return;
+  }
+  if (!rows.length) { const p = document.createElement("p"); p.className = "fine"; p.textContent = LB.ready ? "Nobody has finished this ride yet. Be the first." : "Loading scores…"; el.append(p); return; }
+  const ps = await LB.user.profiles(rows.map(r => r.id));
+  const ol = document.createElement("ol");
+  rows.forEach(r => {
+    const li = document.createElement("li"); if (r.id === LB.uid) li.className = "me";
+    const n = document.createElement("span"); n.textContent = (ps[r.id] && ps[r.id].name || "Someone") + (r.id === LB.uid ? " (you)" : "");
+    const v = document.createElement("b"); v.textContent = fmtScore(r);
+    li.append(n, v); ol.append(li);
+  });
+  el.innerHTML = ""; el.append(h, ol);
+  if (LB.readOnly) { const p = document.createElement("p"); p.className = "fine"; p.textContent = "Your access to this page is view-only, so your score is saved on this device only."; el.append(p); }
+}
+function renderLeaderboards() { renderLeaderboard($("boardLB"), current.id); renderLeaderboard($("doneLB"), current.id); }
 
 rideSel.addEventListener("change", () => { const ds = rides.find(d => d.id === rideSel.value); if (ds) { current = ds; board(); } });
 $("pauseBtn").addEventListener("click", togglePause);
@@ -629,6 +916,7 @@ $("againBtn").addEventListener("click", board);
 $("pickBtn").addEventListener("click", () => { $("doneScreen").hidden = true; $("boardScreen").hidden = false; st.mode = "idle"; populateRides(); });
 window.addEventListener("keydown", e => {
   if (e.target.closest && e.target.closest("textarea, input, select")) return;
+  if (st.decision && !st.decision.answered && /^Digit[1-9]$/.test(e.code)) { e.preventDefault(); choose(+e.code.slice(5) - 1); return; }
   if (e.code === "Space") { e.preventDefault(); togglePause(); }
 });
 
@@ -682,9 +970,10 @@ window.addEventListener("resize", resize);
 /* ------------------------------------------------------------------ */
 let last = performance.now(), idleT = 0;
 function frame(now) {
-  const dt = Math.min(0.05, (now - last) / 1000); last = now;
+  const realDt = Math.min(0.5, (now - last) / 1000), dt = Math.min(0.05, realDt); last = now;
   if (st.mode === "riding" && !st.paused) {
-    let rem = dt * st.mult; while (rem > 0) { const h = Math.min(rem, 1 / 240); step(h); rem -= h; if (st.mode !== "riding") break; }
+    const slow = st.decision ? 0.05 : 1;
+    let rem = dt * st.mult * slow; while (rem > 0) { const h = Math.min(rem, 1 / 240); step(h); rem -= h; if (st.mode !== "riding") break; }
   } else if (st.mode === "idle") {
     // gentle sway at the station while choosing
     idleT += dt; if (!lookState.drag) lookState.yaw = Math.sin(idleT * 0.25) * 0.5;
@@ -706,6 +995,7 @@ function frame(now) {
     lightning *= Math.pow(0.02, dt); sky.uniforms.flash.value = lightning * (Math.random() < 0.7 ? 1 : 0.3);
     hemi.intensity = 0.8 + lightning * 2;
   }
+  if (st.mode === "riding" && !st.paused) tickDecision(realDt);
   if ((hudTick++ & 1) === 0) { updateHud(); drawMini(false); }
   updateAudio(dt);
   renderer.render(scene, camera);
@@ -713,6 +1003,7 @@ function frame(now) {
 }
 
 populateRides();
+initLeaderboard();
 loadRide(current, false);
 selectRide(current);
 resize();

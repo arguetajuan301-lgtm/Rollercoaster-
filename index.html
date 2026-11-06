@@ -75,7 +75,7 @@ body {
   display: grid; gap: 8px;
   background: linear-gradient(to top, rgba(7,11,23,.92), rgba(7,11,23,0));
 }
-#mini { width: 100%; height: 56px; display: block; border-radius: 6px; background: rgba(10,16,34,.55); border: 1px solid var(--line); }
+#mini { width: 100%; height: 74px; display: block; border-radius: 6px; background: rgba(10,16,34,.55); border: 1px solid var(--line); }
 .controls { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .btn, .sel {
   font: 600 0.8rem var(--font-body);
@@ -167,7 +167,88 @@ details.custom input {
 .story h3 { margin: 4px 0 6px; font-family: var(--sfont, var(--font-display)); font-size: 1.45rem; line-height: 1.05; text-wrap: balance; }
 .story p { margin: 0; font-size: 0.88rem; line-height: 1.42; max-width: 60ch; }
 
+/* Wallet: what your $10,000 is worth right now */
+.wallet { margin-top: 8px; display: grid; gap: 1px; font-family: var(--font-data); }
+.wallet .w-main { font-size: 0.95rem; font-weight: 600; }
+.wallet .w-sub { font-size: 0.7rem; color: var(--muted); }
+.wallet.ahead .w-main { color: var(--up); }
+.wallet.behind .w-main { color: var(--down); }
+
+/* Drop warning */
+.warn {
+  position: fixed; z-index: 7; left: 50%; top: calc(env(safe-area-inset-top, 0px) + 30%); transform: translate(-50%, -6px);
+  pointer-events: none; opacity: 0; transition: opacity .25s, transform .25s;
+  display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; justify-content: center;
+  max-width: calc(100vw - 32px); padding: 8px 16px; border-radius: 4px;
+  background: repeating-linear-gradient(-45deg, rgba(255,181,71,.95) 0 14px, rgba(26,18,5,.95) 14px 28px);
+  box-shadow: 0 8px 30px rgba(0,0,0,.5);
+}
+.warn .wi { background: #1a1205; color: var(--amber); padding: 6px 12px; border-radius: 3px; font-family: var(--font-display); font-weight: 900; text-transform: uppercase; font-size: clamp(1rem, 3.6vw, 1.5rem); letter-spacing: .02em; white-space: nowrap; }
+.warn .wi small { font-family: var(--font-data); font-size: .8rem; font-weight: 500; color: var(--fg); margin-left: 8px; text-transform: none; }
+.warn.show { opacity: 1; transform: translate(-50%, 0); animation: warnPulse .5s ease-in-out infinite alternate; }
+@keyframes warnPulse { to { filter: brightness(1.25); } }
+
+/* Height joke: a speech bubble from the front seat */
+.joke {
+  position: fixed; z-index: 6; pointer-events: none;
+  right: max(16px, env(safe-area-inset-right, 0px)); bottom: calc(env(safe-area-inset-bottom, 0px) + 126px);
+  max-width: min(320px, calc(100vw - 32px)); padding: 12px 16px; border-radius: 18px 18px 4px 18px;
+  background: var(--fg); color: #111527; box-shadow: 0 10px 30px rgba(0,0,0,.45);
+  opacity: 0; transform: translateY(10px) scale(.96); transform-origin: bottom right; transition: opacity .35s, transform .35s;
+}
+.joke.show { opacity: 1; transform: none; }
+.joke b { display: block; font-family: var(--font-display); font-weight: 900; text-transform: uppercase; font-size: 1.3rem; line-height: 1; }
+.joke span { display: block; font-size: .9rem; margin-top: 4px; }
+
+/* Decision stop: a stranger or a quiz, while the ride hangs in slow motion */
+.decision {
+  position: fixed; z-index: 8; left: 50%; top: 50%; transform: translate(-50%, -46%);
+  width: min(540px, calc(100vw - 32px)); box-sizing: border-box; max-height: calc(100% - 40px); overflow-y: auto;
+  background: rgba(10, 14, 30, .94); border: 1px solid rgba(255,181,71,.5); border-radius: 10px;
+  padding: 18px 18px 14px; box-shadow: 0 24px 80px rgba(0,0,0,.6); backdrop-filter: blur(6px);
+  opacity: 0; transition: opacity .3s, transform .3s;
+}
+.decision.show { opacity: 1; transform: translate(-50%, -50%); }
+.decision .who { font: 500 .74rem var(--font-data); color: var(--amber); letter-spacing: .04em; }
+.decision.quiz { border-color: rgba(124,196,255,.6); }
+.decision.quiz .who { color: #7cc4ff; }
+.decision h3 { margin: 6px 0 4px; font-family: "Playfair Display", Georgia, serif; font-weight: 900; font-size: clamp(1.15rem, 3.6vw, 1.55rem); line-height: 1.2; text-wrap: balance; }
+.decision.quiz h3 { font-family: var(--font-body); font-weight: 600; }
+.decision .note { margin: 0 0 12px; font-size: .78rem; color: var(--muted); }
+.dec-opts { display: grid; gap: 8px; }
+.dec-opt {
+  display: flex; gap: 10px; align-items: center; text-align: left; cursor: pointer;
+  font: 600 .92rem var(--font-body); color: var(--fg); background: rgba(255,255,255,.05);
+  border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-height: 44px;
+}
+.dec-opt:hover:not(:disabled) { border-color: var(--amber); background: rgba(255,181,71,.1); }
+.dec-opt:focus-visible { outline: 2px solid var(--amber); outline-offset: 2px; }
+.dec-opt:disabled { cursor: default; opacity: .55; }
+.dec-opt.picked, .dec-opt.right { opacity: 1; border-color: var(--up); background: rgba(61,220,151,.15); }
+.dec-opt.wrong { opacity: 1; border-color: var(--down); background: rgba(255,93,108,.15); }
+.dec-opt kbd { font: 500 .7rem var(--font-data); border: 1px solid var(--line); border-radius: 4px; padding: 1px 6px; color: var(--muted); }
+.dec-result { min-height: 1.2em; margin: 10px 0 0; font-size: .86rem; line-height: 1.4; }
+.dec-timer { height: 3px; margin-top: 12px; background: var(--amber); border-radius: 2px; transform-origin: left; }
+.decision.quiz .dec-timer { background: #7cc4ff; }
+
+.story .kind { display: inline-block; color: #0b0f1d; font: 600 .62rem var(--font-data); text-transform: uppercase; letter-spacing: .08em; padding: 2px 6px; border-radius: 3px; margin-right: 8px; vertical-align: 1px; }
+
+/* Scores */
+.score { display: grid; gap: 4px; }
+.score .big { font-family: var(--font-display); font-weight: 900; font-size: clamp(2.6rem, 10vw, 4.4rem); line-height: .95; color: var(--amber); font-variant-numeric: tabular-nums; }
+.score .sub { font: 500 .8rem var(--font-data); color: var(--muted); }
+.score .title { justify-self: start; margin-top: 6px; font: 600 .78rem var(--font-data); text-transform: uppercase; letter-spacing: .1em; padding: 4px 10px; border-radius: 999px; background: rgba(255,181,71,.15); color: var(--amber); border: 1px solid rgba(255,181,71,.5); }
+.lb { background: rgba(14,21,44,.85); border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; }
+.lb h3 { margin: 0 0 8px; font-family: var(--font-display); font-weight: 800; text-transform: uppercase; font-size: 1.1rem; }
+.lb ol { margin: 0; padding-left: 1.4em; display: grid; gap: 4px; font-variant-numeric: tabular-nums; }
+.lb li { font-size: .88rem; }
+.lb li span { display: inline-block; min-width: 0; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
+.lb li b { float: right; font-family: var(--font-data); font-weight: 500; }
+.lb li.me { color: var(--amber); }
+.lb .fine { margin: 0; }
+
 @media (max-width: 560px) {
+  .joke { bottom: calc(env(safe-area-inset-bottom, 0px) + 290px); }
   .story { bottom: calc(env(safe-area-inset-bottom, 0px) + 138px); padding: 10px 12px; }
   .story h3 { font-size: 1.15rem; }
   .story p { font-size: 0.8rem; }
@@ -176,7 +257,7 @@ details.custom input {
   .ride-name { font-size: 1.05rem; }
   .hud-tl { max-width: 56vw; }
 }
-@media (prefers-reduced-motion: reduce) { .toast, .story { transition: none; } }
+@media (prefers-reduced-motion: reduce) { .toast, .story, .joke, .warn, .decision { transition: none; } .warn.show { animation: none; } }
 </style>
 
 <canvas id="scene" aria-label="First-person view from the front car of a roller coaster whose track follows a price chart"></canvas>
@@ -187,6 +268,7 @@ details.custom input {
   <div class="date" id="hudDate">—</div>
   <div class="value" id="hudValue">—</div>
   <div class="chg"><span id="hudChg">—</span><span id="hudDD"></span></div>
+  <div class="wallet" id="wallet"></div>
 </div>
 
 <div class="hud hud-tr">
@@ -197,7 +279,17 @@ details.custom input {
 </div>
 
 <div class="toast" id="toast"></div>
-<div class="story" id="story" aria-live="polite"><div class="k" id="storyK"></div><h3 id="storyT"></h3><p id="storyB"></p></div>
+<div class="warn" id="warn" role="status"><span class="wi"><span id="warnH">Drop ahead</span><small id="warnA"></small></span><span class="wi" id="warnT"></span></div>
+<div class="joke" id="joke" aria-live="polite"><b id="jokeA"></b><span id="jokeB"></span></div>
+<div class="decision" id="decision" role="dialog" aria-labelledby="decSay" hidden>
+  <div class="who" id="decWho"></div>
+  <h3 id="decSay"></h3>
+  <p class="note" id="decNote"></p>
+  <div class="dec-opts" id="decOpts"></div>
+  <p class="dec-result" id="decResult" aria-live="polite"></p>
+  <div class="dec-timer" id="decTimer"></div>
+</div>
+<div class="story" id="story" aria-live="polite"><div class="k"><span class="kind" id="storyKind" hidden></span><span id="storyK"></span></div><h3 id="storyT"></h3><p id="storyB"></p></div>
 
 <div class="dock">
   <canvas id="mini" aria-label="Full chart with your position on it"></canvas>
@@ -217,7 +309,7 @@ details.custom input {
 <div class="overlay" id="boardScreen">
   <div class="board">
     <h1>Chart <span>Coaster</span></h1>
-    <p class="lede">Every chart is a track. Pick a crash, a bubble or a squeeze and ride it from the front car, through the city where it happened, with a soundtrack from the era. Rallies are the slow chain lift. Sell-offs are the drop. Billboards along the way tell you what was going on. Tap a ride to hear its music.</p>
+    <p class="lede">Every chart is a track. Pick a crash, a bubble or a squeeze and ride it from the front car, through the city where it happened, with a soundtrack from the era. Rallies are the slow chain lift. Sell-offs are the drop. Billboards along the way tell you what was going on. Strangers from the era will stop you with tips and dares: decide what to do with your $10,000 and see what you cash out at the end. Tap a ride to hear its music.</p>
     <div class="rides" id="rideGrid"></div>
     <details class="custom" id="customBox">
       <summary>Ride your own chart</summary>
@@ -238,6 +330,7 @@ details.custom input {
       <button class="btn primary" id="boardBtn" type="button">Board the train</button>
       <span class="fine" id="boardHint"></span>
     </div>
+    <div class="lb" id="boardLB"></div>
     <p class="fine">Drag to look around. Space pauses. The music turns darker when the chart is more than 20% below its high. All music is original, generated live in your browser. Values are approximate closing prices at key dates, smoothly interpolated in between, so the shape is right but small wiggles are simplified. The CO₂ ride is modelled from the Mauna Loa trend and its yearly seasonal cycle.</p>
   </div>
 </div>
@@ -245,6 +338,8 @@ details.custom input {
 <div class="overlay" id="doneScreen" hidden>
   <div class="board results">
     <h2 id="doneTitle">Ride complete</h2>
+    <div class="score" id="doneScore" hidden><span class="sub" id="scoreLead">You cashed out</span><span class="big" id="scoreBig"></span><span class="sub" id="scoreSub"></span><span class="title" id="scoreTitle"></span></div>
+    <div class="lb" id="doneLB"></div>
     <div class="statgrid" id="doneStats"></div>
     <div class="board-actions">
       <button class="btn primary" id="againBtn" type="button">Ride again</button>
@@ -255,6 +350,7 @@ details.custom input {
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="js/data.js"></script>
+<script src="js/game.js"></script>
 <script src="js/music.js"></script>
 <script src="js/world.js"></script>
 <script src="js/main.js"></script>
